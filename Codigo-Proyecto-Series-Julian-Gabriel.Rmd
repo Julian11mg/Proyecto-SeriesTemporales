@@ -440,6 +440,34 @@ checkresiduals(din3b)
 ```
 El diagnóstico de residuos del modelo ganador, correspondiente a una regresión dinámica con errores ARIMA(2,0,1), evidenció autocorrelación estadísticamente significativa según la prueba de Ljung-Box (Q = 212.07; p < 0.05). Asimismo, la función de autocorrelación presentó picos importantes en los rezagos 12, 24 y 36, lo que sugiere la persistencia de patrones estacionales no capturados por el modelo. Por tanto, aunque la regresión dinámica obtuvo el menor error de pronóstico durante el período de prueba, no logró representar completamente la dependencia temporal de las exportaciones, lo cual constituye una limitación de la especificación seleccionada.
 
+```{r tabla-residuos-finalistas}
+# Pruebas de autocorrelación de los cuatro finalistas (entrenamiento ampliado).
+lb_hw  <- checkresiduals(hw2b,  plot = FALSE)
+lb_ar  <- checkresiduals(ar1b,  plot = FALSE)
+bg_reg <- checkresiduals(reg2b, plot = FALSE)
+lb_din <- checkresiduals(din3b, plot = FALSE)
+
+# Ljung-Box de la regresión cuadrática, para la nota de la tabla.
+lb_reg <- Box.test(residuals(reg2b), lag = 24, type = "Ljung-Box")
+
+tabla_residuos <- data.frame(
+  Familia = c("Suavizamiento", "ARIMA/SARIMA",
+              "Regresion", "Regresion dinamica"),
+  Modelo = c("HW multiplicativo", "SARIMA(0,1,1)(0,1,1)[12]",
+             "Regresion cuadratica", "Dinamica automatica"),
+  Prueba = c("Ljung-Box", "Ljung-Box", "Breusch-Godfrey", "Ljung-Box"),
+  Estadistico = c(lb_hw$statistic, lb_ar$statistic,
+                  bg_reg$statistic, lb_din$statistic),
+  gl = c(lb_hw$parameter, lb_ar$parameter,
+         bg_reg$parameter, lb_din$parameter),
+  Valor_p = c(lb_hw$p.value, lb_ar$p.value,
+              bg_reg$p.value, lb_din$p.value)
+)
+
+knitr::kable(tabla_residuos, digits = 3)
+lb_reg
+```
+
 # 6. Pronostico final: agosto de 2026 a julio de 2027
 
 Se vuelven a ajustar las especificaciones usando las 319 observaciones. Solo
