@@ -1,0 +1,509 @@
+---
+title: 'Proyecto de series temporales: exportaciones FOB de Costa Rica'
+author: "Julian y Gabriel"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# 1. Cargar datos y explorar la serie
+
+```{r librerias, message=FALSE, warning=FALSE}
+library(readxl)
+library(forecast)
+library(ggplot2)
+```
+
+```{r importar}
+datos <- read_excel("datos_exportaciones_columnas_mes_anioCorr.xlsx",
+                    sheet = "Exportaciones_mensuales")
+head(datos)
+tail(datos)
+summary(datos)
+
+# Los datos empiezan en enero de 2000 y tienen frecuencia mensual.
+exportaciones <- ts(datos$Exportaciones_FOB_millones_USD,
+                    start = c(2000, 1), frequency = 12)
+
+length(exportaciones)
+```
+
+```{r graficos-exploratorios}
+ts.plot(exportaciones, main = "Exportaciones FOB de Costa Rica",
+        ylab = "Millones de USD", xlab = "Año")
+```
+
+
+```{r}
+exportaciones_log <- log(exportaciones)
+ts.plot(exportaciones_log, main = "Logaritmo de las exportaciones FOB",
+        ylab = "log(millones de USD)", xlab = "Año")
+```
+
+
+```{r}
+
+ggseasonplot(exportaciones_log, year.labels = FALSE,
+             continuous = TRUE)
+```
+
+```{r}
+ggAcf(exportaciones_log)
+ggPacf(exportaciones_log)
+```
+
+
+```{r descomposicion}
+descomposicion <- decompose(exportaciones_log, type = "additive")
+plot(descomposicion)
+```
+
+Las exportaciones son estrictamente positivas. Se exploran sus logaritmos
+porque el anteproyecto encontro que la variabilidad de la serie aumenta con
+su nivel. La eleccion del modelo, sin embargo, se hara comparando pronosticos
+en **millones de USD**, no sobre la escala logaritmica.
+
+# 2. Separar entrenamiento, validacion y prueba
+
+La validacion permite elegir **una variante de cada familia**. La prueba final,
+que se mantiene aparte, permite comparar los cuatro finalistas.
+
+```{r separar-datos}
+# Se estiman las variantes de cada familia hasta julio de 2024.
+entrenamiento <- window(exportaciones, end = c(2024, 7))
+
+# Estos 12 meses sirven para escoger la variante de cada familia.
+validacion <- window(exportaciones, start = c(2024, 8), end = c(2025, 7))
+
+# Despues se vuelven a ajustar los modelos hasta julio de 2025.
+entrenamiento2 <- window(exportaciones, end = c(2025, 7))
+
+# Estos 12 meses se reservan para comparar los cuatro finalistas.
+prueba <- window(exportaciones, start = c(2025, 8), end = c(2026, 7))
+
+length(entrenamiento)
+length(validacion)
+length(entrenamiento2)
+length(prueba)
+```
+
+# 3. Primera etapa: probar modelos con la muestra de validacion
+
+## 3.1. Suavizamiento exponencial 
+
+Se ajustan tres opciones que estan ejemplificadas en el laboratorio: el
+Holt-Winters aditivo, el multiplicativo y el multiplicativo amortiguado.
+
+```{r hw-validacion}
+# Modelo 1: Holt-Winters aditivo.
+hw1 <- hw(entrenamiento, seasonal = "additive", h = 12)
+
+# Modelo 2: Holt-Winters multiplicativo.
+hw2 <- hw(entrenamiento, seasonal = "multiplicative", h = 12)
+
+# Modelo 3: Holt-Winters multiplicativo con tendencia amortiguada.
+hw3 <- hw(entrenamiento, seasonal = "multiplicative",
+          damped = TRUE, h = 12)
+
+
+
+```
+
+```{r}
+accuracy(hw1, validacion)
+accuracy(hw2, validacion)
+accuracy(hw3, validacion)
+```
+
+```{r}
+checkresiduals(hw1)
+checkresiduals(hw2)
+checkresiduals(hw3)
+```
+
+En la familia de suavizamiento exponencial se evaluaron tres especificaciones del método Holt-Winters: aditivo, multiplicativo y multiplicativo con tendencia amortiguada. Los resultados del período de validación mostraron que el modelo multiplicativo presentó el mejor desempeño predictivo, con un RMSE de 163.71 millones de dólares, un MAE de 128.72 millones de dólares y un MAPE de 6.93 %. Por esta razón, fue seleccionado como representante de la familia para la comparación posterior.
+
+No obstante, el análisis de residuos evidenció autocorrelación estadísticamente significativa en el modelo seleccionado, según la prueba de Ljung-Box (p < 0.05). En contraste, el modelo aditivo no presentó evidencia suficiente para rechazar la hipótesis de ausencia de autocorrelación al 5 % de significancia (p = 0.05475), aunque obtuvo mayores errores de validación. Por tanto, se priorizó la precisión predictiva para la selección, reconociendo las limitaciones del modelo multiplicativo en la representación de la dependencia temporal.
+
+
+## 3.2. SARIMA 
+
+`lambda = 0` transforma la serie con logaritmos durante el ajuste y permite
+que `forecast()` devuelva los pronosticos a la escala original. Esta opcion
+aparece en el material de ARIMA del repositorio.
+
+```{r sarima-validacion}
+# Modelo 4: SARIMA(0,1,1)(0,1,1)[12].
+ar1 <- Arima(entrenamiento, order = c(0, 1, 1),
+             seasonal = list(order = c(0, 1, 1), period = 12),
+             lambda = 0)
+pr_ar1 <- forecast(ar1, h = 12)
+
+# Modelo 5: SARIMA(1,1,0)(0,1,1)[12].
+ar2 <- Arima(entrenamiento, order = c(1, 1, 0),
+             seasonal = list(order = c(0, 1, 1), period = 12),
+             lambda = 0)
+pr_ar2 <- forecast(ar2, h = 12)
+
+# Modelo 6: ARIMA/SARIMA seleccionado con auto.arima().
+ar3 <- auto.arima(entrenamiento, seasonal = TRUE, lambda = 0)
+pr_ar3 <- forecast(ar3, h = 12)
+
+ar1
+ar2
+ar3
+```
+
+```{r}
+accuracy(pr_ar1, validacion)
+accuracy(pr_ar2, validacion)
+accuracy(pr_ar3, validacion)
+```
+
+```{r}
+checkresiduals(ar1)
+checkresiduals(ar2)
+checkresiduals(ar3)
+```
+
+En la familia ARIMA/SARIMA se evaluaron inicialmente tres especificaciones, incluyendo dos modelos establecidos manualmente y una alternativa seleccionada mediante el procedimiento automático de auto.arima(). En todos los casos se utilizó una transformación logarítmica de la serie, con el propósito de considerar las variaciones observadas en su comportamiento temporal.
+
+Los resultados del período de validación, comprendido entre agosto de 2024 y julio de 2025, mostraron que el modelo SARIMA(0,1,1)(0,1,1)[12] presentó el mejor desempeño predictivo de las tres alternativas iniciales, con un RMSE de 146.81 millones de dólares, un MAE de 111.48 millones de dólares y un MAPE de 6.02 %. El segundo modelo obtuvo errores ligeramente superiores, mientras que el modelo automático presentó una menor precisión predictiva.
+
+Por otra parte, el análisis de residuos evidenció autocorrelación estadísticamente significativa en las tres especificaciones, dado que los valores p de la prueba de Ljung-Box fueron inferiores al nivel de significancia del 5 %. Asimismo, los correlogramas mostraron algunos picos en rezagos asociados con la periodicidad mensual de la serie, lo cual sugiere que los modelos no consiguieron representar completamente la dependencia temporal.
+
+
+## 3.3. Regresion con tendencia y estacionalidad 
+
+`trend` representa el tiempo y `season` los meses del año. Se utilizan las
+mismas formulas `tslm()` que aparecen en el material del profesor.
+
+```{r regresion-validacion}
+# Modelo 7: tendencia lineal y efectos de los 12 meses.
+reg1 <- tslm(entrenamiento ~ trend + season, lambda = 0)
+pr_reg1 <- forecast(reg1, h = 12)
+
+# Modelo 8: tendencia cuadratica y efectos de los 12 meses.
+reg2 <- tslm(entrenamiento ~ trend + I(trend^2) + season, lambda = 0)
+pr_reg2 <- forecast(reg2, h = 12)
+
+summary(reg1)
+summary(reg2)
+```
+```{r}
+accuracy(pr_reg1, validacion)
+accuracy(pr_reg2, validacion)
+```
+
+```{r}
+checkresiduals(reg1)
+checkresiduals(reg2)
+```
+
+
+En la familia de regresión se evaluaron dos especificaciones que incorporaron una tendencia temporal y efectos estacionales mensuales. La primera consideró una tendencia lineal, mientras que la segunda añadió un término cuadrático para permitir una curvatura. Ambas especificaciones se ajustaron sobre la transformación logarítmica de las exportaciones FOB.
+
+Los resultados mostraron que ambos modelos alcanzaron coeficientes de determinación superiores al 96 % durante el entrenamiento. Sin embargo, esta capacidad de ajuste no se tradujo en una precisión predictiva elevada durante el período de validación. La regresión lineal obtuvo un RMSE de 371.75 millones de dólares y un MAPE de 18.53 %, mientras que la regresión cuadrática presentó resultados relativamente mejores, con un RMSE de 340.25 millones de dólares y un MAPE de 16.67 %.
+
+Por otra parte, los diagnósticos de residuos evidenciaron una fuerte dependencia temporal. Las funciones de autocorrelación mostraron valores positivos elevados en los primeros rezagos y una disminución progresiva, mientras que las pruebas de Breusch-Godfrey rechazaron la hipótesis de ausencia de autocorrelación serial en ambos modelos (p < 0.05). Estos resultados indican que la incorporación de tendencia y estacionalidad no fue suficiente para representar completamente la dinámica temporal de las exportaciones.
+
+En consecuencia, se seleccionó la regresión cuadrática como representante de esta familia, debido a sus menores errores de validación. No obstante, se reconoció que su desempeño predictivo fue inferior al de los modelos seleccionados en las familias de suavizamiento exponencial y ARIMA/SARIMA, además de presentar autocorrelación residual significativa.
+
+## 3.4. Regresion dinamica
+
+La unica variable explicativa sera el tiempo, que conocemos para el pasado y
+el futuro. La diferencia con la regresion anterior es que los errores se
+modelan como una serie ARMA. No necesitamos `crear_xreg()` ni variables
+macroeconomicas adicionales.
+
+```{r dinamica-validacion}
+# Tiempo observado y tiempo de los 12 meses siguientes.
+tiempo1 <- 1:length(entrenamiento)
+tiempo_futuro1 <- (length(entrenamiento) + 1):(length(entrenamiento) + 12)
+
+# Modelo 9: tendencia lineal con error AR(1).
+din1 <- Arima(entrenamiento, xreg = tiempo1,
+              order = c(1, 0, 0), lambda = 0)
+pr_din1 <- forecast(din1, xreg = tiempo_futuro1)
+
+# Modelo 10: tendencia lineal con error ARMA(1,1).
+din2 <- Arima(entrenamiento, xreg = tiempo1,
+              order = c(1, 0, 1), lambda = 0)
+pr_din2 <- forecast(din2, xreg = tiempo_futuro1)
+
+# Modelo 11: tendencia lineal con errores ARMA elegidos automaticamente.
+# d=0 y stationary=TRUE mantienen los errores estacionarios.
+din3 <- auto.arima(entrenamiento, xreg = tiempo1, d = 0,
+                  stationary = TRUE, seasonal = FALSE, lambda = 0)
+pr_din3 <- forecast(din3, xreg = tiempo_futuro1)
+
+din1
+din2
+din3
+
+```
+
+```{r}
+accuracy(pr_din1, validacion)
+accuracy(pr_din2, validacion)
+accuracy(pr_din3, validacion)
+```
+
+```{r}
+checkresiduals(din1)
+checkresiduals(din2)
+checkresiduals(din3)
+```
+
+En la familia de regresión dinámica se evaluaron tres especificaciones que incorporaron una tendencia temporal determinística como variable explicativa y diferentes estructuras ARIMA para representar la dependencia temporal de los errores. Inicialmente se consideró un modelo con errores ARIMA(1,0,0), posteriormente una especificación ARIMA(1,0,1) y, finalmente, una alternativa seleccionada mediante el procedimiento automático de auto.arima(), que identificó una estructura ARIMA(2,0,1). En todos los casos se utilizó una transformación logarítmica de la serie.
+
+Los resultados obtenidos durante el período de validación mostraron que la regresión dinámica automática presentó el mejor desempeño predictivo de esta familia, con un RMSE de 278.30 millones de dólares, un MAE de 243.03 millones de dólares y un MAPE de 13.00 %. Estos resultados representaron una mejora considerable respecto a las otras dos especificaciones evaluadas. Asimismo, el modelo automático presentó los menores valores de AIC, AICc y BIC, lo cual respaldó su selección dentro de la familia.
+
+No obstante, los diagnósticos de residuos evidenciaron autocorrelación estadísticamente significativa en las tres especificaciones, dado que las pruebas de Ljung-Box presentaron valores p inferiores al 5 % de significancia. Los correlogramas mostraron picos particularmente elevados en los rezagos 12, 24 y 36, lo que sugirió la persistencia de patrones estacionales que no fueron capturados completamente por los modelos. Esto podría estar relacionado con la ausencia de componentes estacionales explícitos tanto en las variables explicativas como en las estructuras ARIMA utilizadas para los errores.
+
+En consecuencia, se seleccionó la regresión dinámica con errores ARIMA(2,0,1) como representante de la familia, debido a su mayor precisión predictiva durante la validación y sus mejores criterios de información. Sin embargo, se reconoció la autocorrelación residual como una limitación de la especificación seleccionada.
+
+## 3.5. Tabla de validacion y eleccion de un modelo por familia
+
+```{r errores-validacion}
+e1 <- accuracy(hw1, validacion)
+e2 <- accuracy(hw2, validacion)
+e3 <- accuracy(hw3, validacion)
+e4 <- accuracy(pr_ar1, validacion)
+e5 <- accuracy(pr_ar2, validacion)
+e6 <- accuracy(pr_ar3, validacion)
+e7 <- accuracy(pr_reg1, validacion)
+e8 <- accuracy(pr_reg2, validacion)
+e9 <- accuracy(pr_din1, validacion)
+e10 <- accuracy(pr_din2, validacion)
+e11 <- accuracy(pr_din3, validacion)
+
+tabla_validacion <- data.frame(
+  Familia = c(rep("Suavizamiento", 3), rep("ARIMA/SARIMA", 3),
+              rep("Regresion", 2), rep("Regresion dinamica", 3)),
+  Modelo = c("HW aditivo", "HW multiplicativo", "HW multiplicativo amortiguado",
+             "SARIMA 011-011", "SARIMA 110-011", "ARIMA automatico",
+             "Regresion lineal", "Regresion cuadratica",
+             "Dinamica AR(1)", "Dinamica ARMA(1,1)", "Dinamica automatica"),
+  RMSE = c(e1[2,"RMSE"], e2[2,"RMSE"], e3[2,"RMSE"],
+           e4[2,"RMSE"], e5[2,"RMSE"], e6[2,"RMSE"],
+           e7[2,"RMSE"], e8[2,"RMSE"], e9[2,"RMSE"],
+           e10[2,"RMSE"], e11[2,"RMSE"]),
+  MAE = c(e1[2,"MAE"], e2[2,"MAE"], e3[2,"MAE"],
+          e4[2,"MAE"], e5[2,"MAE"], e6[2,"MAE"],
+          e7[2,"MAE"], e8[2,"MAE"], e9[2,"MAE"],
+          e10[2,"MAE"], e11[2,"MAE"]),
+  MAPE = c(e1[2,"MAPE"], e2[2,"MAPE"], e3[2,"MAPE"],
+           e4[2,"MAPE"], e5[2,"MAPE"], e6[2,"MAPE"],
+           e7[2,"MAPE"], e8[2,"MAPE"], e9[2,"MAPE"],
+           e10[2,"MAPE"], e11[2,"MAPE"])
+)
+
+knitr::kable(tabla_validacion, digits = 2)
+
+# which.min() señala la posicion del menor RMSE de cada familia.
+# El numero sumado permite localizar esa posicion en la tabla completa.
+mejor_hw <- which.min(tabla_validacion$RMSE[1:3])
+mejor_ar <- 3 + which.min(tabla_validacion$RMSE[4:6])
+mejor_reg <- 6 + which.min(tabla_validacion$RMSE[7:8])
+mejor_din <- 8 + which.min(tabla_validacion$RMSE[9:11])
+
+indices_finalistas <- c(mejor_hw, mejor_ar, mejor_reg, mejor_din)
+tabla_validacion[indices_finalistas, ]
+```
+
+A partir de los resultados de validación, se seleccionó un modelo finalista por cada familia, utilizando principalmente el RMSE como criterio de comparación. El modelo SARIMA(0,1,1)(0,1,1)[12] presentó el mejor desempeño predictivo, con un RMSE de 146.81 y un MAPE de 6.02 %, seguido de Holt-Winters multiplicativo, con un RMSE de 163.71. Por su parte, la regresión dinámica automática superó a la regresión cuadrática, con valores de RMSE de 278.30 y 340.25, respectivamente.
+
+Sin embargo, los cuatro finalistas presentaron autocorrelación residual significativa, lo que se reconoció como una limitación. Posteriormente, los modelos seleccionados se reajustaron con información hasta julio de 2025 para comparar su capacidad predictiva durante el período de prueba, comprendido entre agosto de 2025 y julio de 2026.
+
+# 4. Segunda etapa: comparar los cuatro finalistas en prueba
+
+Volvemos a estimar las mismas 11 especificaciones con datos hasta julio de
+2025. Asi cada finalista seleccionado por validacion tiene un modelo reajustado
+que pronostica exactamente agosto de 2025 a julio de 2026.
+
+```{r}
+# Ganador de suavizamiento exponencial
+hw2b <- hw(entrenamiento2,
+           seasonal = "multiplicative",
+           h = 12)
+```
+
+
+```{r}
+# Ganador de ARIMA/SARIMA
+ar1b <- Arima(entrenamiento2,
+              order = c(0, 1, 1),
+              seasonal = list(order = c(0, 1, 1),
+                              period = 12),
+              lambda = 0)
+
+pr_ar1b <- forecast(ar1b, h = 12)
+```
+
+
+```{r}
+# Ganador de regresion
+reg2b <- tslm(entrenamiento2 ~ trend + I(trend^2) + season,
+              lambda = 0)
+
+pr_reg2b <- forecast(reg2b, h = 12)
+```
+
+```{r}
+# Ganador de regresion dinamica
+tiempo2 <- seq_along(entrenamiento2)
+
+din3b <- auto.arima(entrenamiento2,
+                   xreg = tiempo2,
+                   d = 0,
+                   stationary = TRUE,
+                   seasonal = FALSE,
+                   lambda = 0)
+
+pr_din3b <- forecast(din3b,
+                     xreg = length(entrenamiento2) + 1:12)
+```
+
+
+
+```{r}
+# Errores de los cuatro finalistas
+p1 <- accuracy(hw2b, prueba)
+p2 <- accuracy(pr_ar1b, prueba)
+p3 <- accuracy(pr_reg2b, prueba)
+p4 <- accuracy(pr_din3b, prueba)
+
+# Tabla comparativa
+tabla_prueba <- data.frame(
+  Familia = c("Suavizamiento",
+              "ARIMA/SARIMA",
+              "Regresion",
+              "Regresion dinamica"),
+
+  Modelo = c("HW multiplicativo",
+             "SARIMA 011-011",
+             "Regresion cuadratica",
+             "Dinamica automatica"),
+
+  RMSE = c(p1[2, "RMSE"],
+           p2[2, "RMSE"],
+           p3[2, "RMSE"],
+           p4[2, "RMSE"]),
+
+  MAE = c(p1[2, "MAE"],
+          p2[2, "MAE"],
+          p3[2, "MAE"],
+          p4[2, "MAE"]),
+
+  MAPE = c(p1[2, "MAPE"],
+           p2[2, "MAPE"],
+           p3[2, "MAPE"],
+           p4[2, "MAPE"])
+)
+
+# Identificar al ganador antes de ordenar
+indice_ganador <- which.min(tabla_prueba$RMSE)
+
+# Ordenar los modelos por RMSE
+tabla_finalistas <- tabla_prueba[order(tabla_prueba$RMSE), ]
+
+knitr::kable(tabla_finalistas, digits = 2)
+
+# Mostrar el modelo ganador
+tabla_prueba[indice_ganador, ]
+```
+En esta etapa se reajustaron los cuatro modelos finalistas utilizando las 307 observaciones disponibles hasta julio de 2025. Posteriormente, se evaluó su capacidad predictiva durante el período de prueba, comprendido entre agosto de 2025 y julio de 2026.
+
+Los resultados mostraron que la regresión dinámica automática presentó el mejor desempeño predictivo, con un RMSE de 179.10 millones de dólares, un MAE de 145.25 millones de dólares y un MAPE de 7.64 %. Este modelo consiguió reducir el RMSE aproximadamente un 13.7 % respecto a Holt-Winters multiplicativo y un 14.3 % respecto al SARIMA, que había presentado el mejor desempeño durante la validación.
+
+Por tanto, se seleccionó la regresión dinámica automática como modelo ganador, al obtener los menores errores en las tres métricas evaluadas. No obstante, se reconoció la autocorrelación residual significativa identificada previamente como una limitación de la especificación seleccionada.
+
+
+```{r}
+autoplot(window(exportaciones, start = c(2024, 1))) +
+  autolayer(hw2b, series = "Suavizamiento", PI = FALSE) +
+  autolayer(pr_ar1b, series = "ARIMA/SARIMA", PI = FALSE) +
+  autolayer(pr_reg2b, series = "Regresión", PI = FALSE) +
+  autolayer(pr_din3b, series = "Regresión dinámica", PI = FALSE) +
+  xlab("Año") +
+  ylab("Millones de USD") +
+  ggtitle("Pronósticos de los cuatro finalistas y valores observados")
+```
+El gráfico muestra diferencias importantes entre los pronósticos de los cuatro modelos finalistas y los valores observados. Los modelos SARIMA y Holt-Winters reprodujeron fluctuaciones estacionales pronunciadas, aunque sobreestimaron algunos valores, mientras que la regresión cuadrática tendió a subestimar las exportaciones. Por su parte, la regresión dinámica presentó una trayectoria más estable y obtuvo el menor RMSE durante el período de prueba (179.10 millones de dólares). Sin embargo, su incapacidad para reproducir las fluctuaciones mensuales evidencia limitaciones en la representación de la estacionalidad de la serie.
+
+# 5. Revisar los residuos del modelo ganador
+
+
+```{r diagnosticos}
+checkresiduals(din3b)
+```
+El diagnóstico de residuos del modelo ganador, correspondiente a una regresión dinámica con errores ARIMA(2,0,1), evidenció autocorrelación estadísticamente significativa según la prueba de Ljung-Box (Q = 212.07; p < 0.05). Asimismo, la función de autocorrelación presentó picos importantes en los rezagos 12, 24 y 36, lo que sugiere la persistencia de patrones estacionales no capturados por el modelo. Por tanto, aunque la regresión dinámica obtuvo el menor error de pronóstico durante el período de prueba, no logró representar completamente la dependencia temporal de las exportaciones, lo cual constituye una limitación de la especificación seleccionada.
+
+# 6. Pronostico final: agosto de 2026 a julio de 2027
+
+Se vuelven a ajustar las especificaciones usando las 319 observaciones. Solo
+se mostrara el pronostico de la alternativa que gano la prueba. Esta repeticion
+se hace para que todo sea explicito, sin programar funciones de seleccion.
+
+```{r pronostico-con-datos-completos}
+# 6. Pronostico final: agosto de 2026 a julio de 2027
+
+# Tendencia temporal con los 319 datos
+tiempo_completo <- 1:length(exportaciones)
+
+# Tendencia para los siguientes 12 meses
+tiempo_futuro <- (length(exportaciones) + 1):
+                 (length(exportaciones) + 12)
+
+# Ajustar el modelo ganador con todos los datos
+modelo_final <- auto.arima(exportaciones,
+                          xreg = tiempo_completo,
+                          d = 0,
+                          stationary = TRUE,
+                          seasonal = FALSE,
+                          lambda = 0)
+
+# Observar el modelo ajustado
+summary(modelo_final)
+
+# Pronosticar los siguientes 12 meses
+pronostico_final <- forecast(modelo_final,
+                            xreg = tiempo_futuro)
+
+# Mostrar los pronosticos
+pronostico_final
+
+# Grafico del pronostico final
+plot(pronostico_final, main="Pronóstico final de las exportaciones FOB de la regresión dinamica con errores ARIMA(2,0,1)",xlab = "Año",ylab = "Exportaciones")
+```
+
+```{r tabla-pronostico-final}
+# Crear los meses del periodo de pronostico
+meses <- seq(as.Date("2026-08-01"),
+             by = "month",
+             length.out = 12)
+
+# Tabla de pronosticos con intervalos al 95 %
+tabla_pronostico <- data.frame(
+  Mes = meses,
+  Pronostico = as.numeric(pronostico_final$mean),
+  Limite_inferior_95 = as.numeric(pronostico_final$lower[, 2]),
+  Limite_superior_95 = as.numeric(pronostico_final$upper[, 2])
+)
+
+knitr::kable(tabla_pronostico, digits = 2)
+```
+
+
+Una vez seleccionado el modelo ganador, se reajustó la regresión dinámica automática utilizando las 319 observaciones disponibles hasta julio de 2026. El procedimiento volvió a identificar una estructura de errores ARIMA(2,0,1), con la cual se generaron pronósticos para el período comprendido entre agosto de 2026 y julio de 2027.
+
+Los resultados proyectan un comportamiento relativamente estable de las exportaciones FOB, con valores cercanos a los 2,000 millones de dólares mensuales y una tendencia de crecimiento moderado durante 2027. Asimismo, los intervalos de predicción al 95 % se amplían conforme aumenta el horizonte, reflejando una mayor incertidumbre en las estimaciones futuras. No obstante, debido a la autocorrelación residual identificada previamente, estos pronósticos y sus intervalos deben interpretarse con cautela, reconociendo las limitaciones del modelo para representar completamente la dependencia temporal y la estacionalidad de la serie.
+
+
+```{r referencias}
+citation("forecast")
+citation("readxl")
+citation("ggplot2")
+citation()
+```
