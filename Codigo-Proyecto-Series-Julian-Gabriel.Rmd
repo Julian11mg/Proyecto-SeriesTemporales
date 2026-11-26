@@ -14,12 +14,11 @@ library(forecast)
 library(ggplot2)
 ```
 
-```{r importar}
+## Análisis descriptivo inicial
+
+```{r}
 datos <- read_excel("datos_exportaciones_columnas_mes_anioCorr.xlsx",
                     sheet = "Exportaciones_mensuales")
-head(datos)
-tail(datos)
-summary(datos)
 
 # Los datos empiezan en enero de 2000 y tienen frecuencia mensual.
 exportaciones <- ts(datos$Exportaciones_FOB_millones_USD,
@@ -27,6 +26,8 @@ exportaciones <- ts(datos$Exportaciones_FOB_millones_USD,
 
 length(exportaciones)
 ```
+
+
 
 ```{r graficos-exploratorios}
 ts.plot(exportaciones, main = "Exportaciones FOB de Costa Rica",
@@ -48,15 +49,33 @@ ggseasonplot(exportaciones_log, year.labels = FALSE,
 ```
 
 ```{r}
-ggAcf(exportaciones_log)
-ggPacf(exportaciones_log)
+ggAcf(exportaciones_log)+
+  labs(title = NULL, x = "Rezago", y = "Autocorrelación")
+ggPacf(exportaciones_log)+
+  labs(title = NULL, x = "Rezago", y = "Autocorrelación")
 ```
 
 
 ```{r descomposicion}
 descomposicion <- decompose(exportaciones_log, type = "additive")
-plot(descomposicion)
+
+componentes <- data.frame(
+  fecha = rep(as.numeric(time(exportaciones_log)), 4),
+  valor = c(exportaciones_log, descomposicion$trend,
+            descomposicion$seasonal, descomposicion$random),
+  componente = factor(rep(c("Serie en logaritmo", "Tendencia",
+                            "Estacionalidad", "Aleatorio"),
+                          each = length(exportaciones_log)),
+                      levels = c("Serie en logaritmo", "Tendencia",
+                                 "Estacionalidad", "Aleatorio"))
+)
+
+ggplot(componentes, aes(x = fecha, y = valor)) +
+  geom_line(na.rm = TRUE) +
+  facet_wrap(~ componente, ncol = 1, scales = "free_y") +
+  labs(x = "Año", y = NULL)
 ```
+
 
 Las exportaciones son estrictamente positivas. Se exploran sus logaritmos
 porque el anteproyecto encontro que la variabilidad de la serie aumenta con
@@ -435,6 +454,14 @@ El gráfico muestra diferencias importantes entre los pronósticos de los cuatro
 # 5. Revisar los residuos del modelo ganador
 
 
+```{r}
+#Residuos de los otros modelos finalistas
+checkresiduals(hw2b)
+checkresiduals(ar1b)
+checkresiduals(reg2b)
+```
+
+
 ```{r diagnosticos}
 checkresiduals(din3b)
 ```
@@ -533,5 +560,6 @@ Los resultados proyectan un comportamiento relativamente estable de las exportac
 citation("forecast")
 citation("readxl")
 citation("ggplot2")
+citation("knitr")
 citation()
 ```
